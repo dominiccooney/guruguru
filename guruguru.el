@@ -61,12 +61,14 @@ RULES is an assoc list of symbols to parsing expressions."
 (defun gg-seq (&rest args)
   "Parses the patterns in ARGS sequentially.
 `gg-seq' produces the result of the last pattern as its result."
-  (cond ((and (consp args) (cdr args))
-         `(gg-seq ,(car args) ,(apply 'gg-seq (cdr args))))
-        ((consp args)
-         (car args))
-        (t
-         (error "empty sequence"))))
+  (if (null args)
+      (gg-eps)
+    (let ((fst (car args))
+          (snd (apply 'gg-seq (cdr args))))
+      (cond
+       ((eq 'gg-eps (car fst)) snd)
+       ((eq 'gg-eps (car snd)) fst)
+       (t `(gg-seq ,fst ,snd))))))
 
 (defun gg-alt (&rest args)
   "Tries the patterns in ARGS until one succeeds."
@@ -258,7 +260,7 @@ An expression e, can:
 
   \"a*\"  Match a regular expression.
 
-   eof  End-of-buffer.
+   eof  Succeed if at end-of-buffer.
 
      x  Evaluate a named rule.
 
@@ -287,6 +289,7 @@ Operator precedence:
   `(,name . ,(gg-translate-alts alternatives)))
 
 (defun gg-translate-alts (alts)
+  "Translates the symbols in ALTS into a parsing expression."
   (let* ((alt-rest (gg-translate-alt alts 0 (gg-eps)))
          (alt (car alt-rest))
          (rest (cdr alt-rest)))
@@ -296,6 +299,9 @@ Operator precedence:
       alt)))
 
 (defun gg-translate-alt (alt prec expr)
+  "Translates symbols in ALT, at precedence PREC, to continue building EXPR.
+See `gg-rule' for the syntax of ALT. PREC controls how early to
+stop consuming symbols. EXPR is the partial expression already built."
   (if (eq (cadr alt) ':=)
       (let* ((sym (car alt))
              (rvalue-rest (gg-translate-alt (cddr alt) 1 (gg-eps)))
@@ -370,9 +376,7 @@ Operator precedence:
   "Internal.
 
 Translates a list of rules, RULES, through repeated application of `gg-rule'."
-  (if rules
-      (cons (apply 'gg-rule (car rules)) (gg-translate-rules (cdr rules)))
-    nil))
+  (mapcar (lambda (rule) (apply 'gg-rule rule)) rules))
 
 (defmacro gg-grammar (&rest rules)
   "Translates RULES into a grammar.
