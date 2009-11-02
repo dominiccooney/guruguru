@@ -206,14 +206,37 @@ like the first argument to `let'."
 
     ('gg-call
      (let* ((rule (cadr pattern))
-            (pat (gg-pattern-for-rule gg-grammar rule))
-            (gg-bindings ()))
+            (pat (gg-pattern-for-rule gg-grammar rule)))
        (if pat
-           (gg-eval pat)
+           (gg-apply-rule rule pat)
          (error "Invalid rule %s" rule))))
 
     (t
      (error "Invalid pattern %s" pattern))))
+
+(defstruct gg-memo
+  "The memoized result of applying a rule.
+RESULT is the parse result; see `gg-parse'. END is the character
+position after parsing the result."
+  result
+  end)
+
+(defun gg-apply-rule (rule pattern)
+  "Applies the rule named RULE with body PATTERN at point.
+
+`gg-apply-rule' maintains the table of memoized results, `gg-memo-table'."
+  (let* ((gg-bindings ())
+         (key (cons rule (point)))
+         (memo (gethash key gg-memo-table)))
+    (cond
+     (memo  ; return the memoized result
+      (goto-char (gg-memo-end memo))
+      (gg-memo-result memo))
+     (t     ; evaluate the rule
+      (let* ((result (gg-eval pattern))
+             (memo (make-gg-memo :result result :end (point))))
+        (puthash key memo gg-memo-table)
+        result)))))
 
 (defun gg-end ()
   "Succeeds if `point' is at the end of the buffer.
@@ -384,10 +407,11 @@ See `gg-rule' for the syntax of rules. The first is the start rule."
   `(make-gg-grammar :rules '(,@(gg-translate-rules rules))))
 
 (defun gg-parse (gg-grammar)
-  "Parses GRAMMAR from the current point.
+  "Parses GG-GRAMMAR from the current point.
 On success, `gg-parse' returns (t . result) and point is moved to
 the end of the successful parse. On failure, `gg-parse' returns
 nil and point is not moved."
-  (gg-eval (gg-pattern-for-rule gg-grammar (gg-grammar-start gg-grammar))))
+  (let ((gg-memo-table (make-hash-table :test 'equal)))
+    (gg-eval (gg-call (gg-grammar-start gg-grammar)))))
 
 (provide 'guruguru)

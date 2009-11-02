@@ -131,6 +131,7 @@
                         (gg-seq (gg-any) (gg-bind 'len (gg-call 'tail))))
                 (gg-act (lambda () 0) (gg-end))))
            (gg-bindings ())
+           (gg-memo-table (make-hash-table :test 'equal))
            (gg-grammar (make-gg-grammar :rules `((tail . ,xs)))))
       (gg-eval (gg-call 'tail)))))
 
@@ -144,4 +145,15 @@
          ?b x := expr -> (+ 2 x)
        | ?a x := expr -> (- x 1)
        | -> 0)))))
+
+ ; intermediate results should be memoized
+ (expect '(t . 1)
+   (with-test-buffer "ac"
+    (let ((invoke-count 0))
+      (gg-parse
+       (gg-grammar
+        (start
+           x := a ?b eof -> x
+         | x := a ?c eof -> x)
+        (a ?a -> (incf invoke-count)))))))
 )
