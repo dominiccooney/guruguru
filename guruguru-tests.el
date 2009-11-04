@@ -132,6 +132,8 @@
                 (gg-act (lambda () 0) (gg-end))))
            (gg-bindings ())
            (gg-memo-table (make-hash-table :test 'equal))
+           (gg-heads (make-hash-table :test 'equal))
+           (gg-lr-stack nil)
            (gg-grammar (make-gg-grammar :rules `((tail . ,xs)))))
       (gg-eval (gg-call 'tail)))))
 
@@ -156,4 +158,22 @@
            x := a ?b eof -> x
          | x := a ?c eof -> x)
         (a ?a -> (incf invoke-count)))))))
+
+ ; left-recursive rules should work
+ (expect '(t . 37)
+   (with-test-buffer "3*5*2+7"
+     (gg-parse
+      (gg-grammar
+       (start x := term eof -> x)
+       (term
+          x := term ?+ y := fact -> (+ x y)
+        | x := term ?- y := fact -> (- x y)
+        | fact)
+       (fact
+          x := fact ?* y := num -> (* x y)
+        | x := fact ?/ y := num -> (/ x y)
+        | num)
+       (num
+          ?0 -> 0 | ?1 -> 1 | ?2 -> 2 | ?3 -> 3 | ?4 -> 4
+        | ?5 -> 5 | ?6 -> 6 | ?7 -> 7 | ?8 -> 8 | ?9 -> 9)))))
 )

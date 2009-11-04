@@ -221,22 +221,131 @@ position after parsing the result."
   result
   end)
 
-(defun gg-apply-rule (rule pattern)
-  "Applies the rule named RULE with body PATTERN at point.
+(defstruct gg-lr
+  "A stack of active rules, for determining when left-recursion starts.
+SEED is the result parsed so far. RULE is the rule active at this
+level on the stack. HEAD is `gg-head' of the first recursively
+entered rule. NEXT is the previous activation on the stack."
+  seed
+  rule
+  head
+  next)
 
-`gg-apply-rule' maintains the table of memoized results, `gg-memo-table'."
-  (let* ((gg-bindings ())
-         (key (cons rule (point)))
-         (memo (gethash key gg-memo-table)))
+(defstruct (gg-head
+  (:constructor nil)
+  (:constructor make-gg-head
+                (&key rule
+                      (eval-set (make-hash-table :test 'equal))
+                      (involved-set (make-hash-table :test 'equal)))))
+  "The set of rules involved in a left-recursive loop."
+  rule
+  eval-set
+  involved-set)
+
+(defun gg-grow-lr (rule pos memo head)
+  "Parses during left recursion by repeatedly invoking the head rule."
+  (let ((done nil))
+    (puthash pos head gg-heads)  ; left recursion growth is starting
+    (while (not done)
+      (goto-char pos)
+      (setf (gg-head-eval-set head)
+            (copy-hash-table (gg-head-involved-set head)))
+      (let ((result (gg-eval (gg-pattern-for-rule gg-grammar rule))))
+        (if (or (not result) (<= (point) (gg-memo-end memo)))
+            (setq done t)
+          (progn
+            (setf (gg-memo-result memo) result)
+            (setf (gg-memo-end memo) (point))))))
+    (puthash pos nil gg-heads)
+    (goto-char (gg-memo-end memo))
+    (gg-memo-result memo)))
+
+(defun gg-set-up-lr (rule lr)
+  "Walks the LR stack and builds LR's set of involved rules."
+  (unless (gg-lr-head lr)
+    (setf (gg-lr-head lr) (make-gg-head :rule rule)))
+  (let ((s gg-lr-stack)
+        (head (gg-lr-head lr)))
+    (while (not (eq (gg-lr-head s) head))
+      (setf (gg-lr-head s) head)
+      (puthash (gg-lr-rule s) t (gg-head-involved-set head))
+      (setq s (gg-lr-next s)))))
+
+(defun gg-lr-answer (rule pos memo)
+  "Computes the latest result for RULE involved in left recursion at POS.
+MEMO is the `gg-memo' to update with the memoized result."
+  (let* ((lr (gg-memo-result memo))
+         (head (gg-lr-head lr)))
+    (if (not (equal rule (gg-head-rule head)))
+        (gg-lr-seed lr)
+      (progn
+        (setf (gg-memo-result memo) (gg-lr-seed lr))
+        (if (gg-memo-result memo)
+            (gg-grow-lr rule pos memo head)
+          nil)))))
+
+(defun gg-recall (rule pos)
+  "Gets the memoized entry, if any, for invoking RULE at POS.
+Memoized entries are stored in the dynamically scoped variable
+GG-MEMO-TABLE."
+  (let ((memo (gethash (cons rule pos) gg-memo-table))
+        (head (gethash pos gg-heads)))
     (cond
-     (memo  ; return the memoized result
-      (goto-char (gg-memo-end memo))
-      (gg-memo-result memo))
-     (t     ; evaluate the rule
-      (let* ((result (gg-eval pattern))
-             (memo (make-gg-memo :result result :end (point))))
-        (puthash key memo gg-memo-table)
-        result)))))
+     ((not head)
+      ; not growing a seed parse
+      memo)
+
+     ((and (not memo)
+           (not (equal (gg-head-rule head) rule))
+           (not (gethash rule (gg-head-involved-set head))))
+      ; the rule isn't involved in the recursion, so fail
+      (make-gg-memo :result nil :end pos))
+
+     ((gethash rule (gg-head-eval-set head))
+      ; evaluate the rule if it is involved, but only once
+      (puthash rule nil (gg-head-eval-set head))
+      (let ((result (gg-eval (gg-call rule))))
+        (setf (gg-memo-result memo) result)
+        (setf (gg-memo-end memo) (point)))
+      memo)
+     (t memo))))
+
+(defun gg-apply-rule (rule pattern)
+  "Applies the rule named RULE with body PATTERN at point."
+  (let* ((gg-bindings ())
+         (start-pos (point))
+         (key (cons rule start-pos))
+         (memo (gg-recall rule start-pos)))
+    (if (not memo)
+        ; no memoized result, so parse
+        (let ((lr (make-gg-lr :head nil :seed nil :rule rule
+                              :next gg-lr-stack)))
+          ; push the rule activation stack
+          (setq gg-lr-stack lr)
+          ; record the left recursion marker as a temporary result
+          (setq memo (make-gg-memo :result lr :end start-pos))
+          (puthash key memo gg-memo-table)
+          ; evaluate the rule
+          (let ((result (gg-eval pattern)))
+            ; pop the rule activation stack
+            (setq gg-lr-stack (gg-lr-next gg-lr-stack))
+            (setf (gg-memo-end memo) (point))
+            (if (gg-lr-head lr)
+                (progn
+                  (setf (gg-lr-seed lr) result)
+                  (gg-lr-answer rule start-pos memo))
+              (setf (gg-memo-result memo) result))))
+      (progn
+        ; a memoized result, so skip to the end of the result
+        (goto-char (gg-memo-end memo))
+        (if (gg-lr-p (gg-memo-result memo))
+            ; memoized result is a left-recursion marker so start
+            ; recursive parsing
+            (let ((lr (gg-memo-result memo)))
+              (gg-set-up-lr rule lr)
+              (gg-lr-seed lr))
+          ; ordinary result is memoized, so done
+          (gg-memo-result memo))))))
 
 (defun gg-end ()
   "Succeeds if `point' is at the end of the buffer.
@@ -411,7 +520,9 @@ See `gg-rule' for the syntax of rules. The first is the start rule."
 On success, `gg-parse' returns (t . result) and point is moved to
 the end of the successful parse. On failure, `gg-parse' returns
 nil and point is not moved."
-  (let ((gg-memo-table (make-hash-table :test 'equal)))
+  (let ((gg-memo-table (make-hash-table :test 'equal))
+        (gg-heads (make-hash-table :test 'eq))
+        (gg-lr-stack nil))
     (gg-eval (gg-call (gg-grammar-start gg-grammar)))))
 
 (provide 'guruguru)
