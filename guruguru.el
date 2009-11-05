@@ -58,6 +58,10 @@ RULES is an assoc list of symbols to parsing expressions."
 `gg-any' fails if the point is at the end of the current buffer."
   '(gg-any))
 
+(defun gg-re (re)
+  "Matches the regular expression at `point'."
+  (cons 'gg-re re))
+
 (defun gg-seq (&rest args)
   "Parses the patterns in ARGS sequentially.
 `gg-seq' produces the result of the last pattern as its result."
@@ -128,8 +132,14 @@ invoking ACTION a second time."
   "Evaluates BODY with BINDINGS in scope.
 BINDINGS is a list of bindings, ((sym1 val1) (sym2 val2) ...),
 like the first argument to `let'."
-  (let ((bindings (eval bindings)))
-    `(let ,bindings ,@body)))
+  (let* ((bindings (eval bindings))
+         (symbols (mapcar 'car bindings))
+         (values (mapcar 'gg-dynamic-let-quote-value (mapcar 'cdr bindings))))
+    `(funcall (lambda ,symbols ,@body) ,@values)))
+
+(defun gg-dynamic-let-quote-value (value)
+  "Adds a level of quoting to VALUE."
+  `',value)
 
 (defmacro gg-try-parse (&rest body)
   "Evaluates BODY but resets `point' and bindings if BODY fails."
@@ -154,6 +164,15 @@ like the first argument to `let'."
      (unless (eobp)
        (goto-char (1+ (point)))
        `(t . ,(char-before))))
+
+    ('gg-re
+     (gg-try-parse
+      (if (and (search-forward-regexp (cdr pattern) nil t)
+               (= gg-try-parse-start (match-beginning 0)))
+          `(t . ,(match-string 0))
+        (progn
+          (gg-retry)
+          nil))))
 
     ('gg-seq
      (gg-try-parse
@@ -189,7 +208,7 @@ like the first argument to `let'."
             (pat (caddr pattern))
             (result (gg-eval pat)))
        (when result
-         (setq gg-bindings (cons (list symbol (cdr result)) gg-bindings))
+         (setq gg-bindings (cons (cons symbol (cdr result)) gg-bindings))
          result)))
 
     ('gg-act
@@ -496,6 +515,13 @@ stop consuming symbols. EXPR is the partial expression already built."
 
         ((numberp (car alt))
          (let ((expr (gg-seq expr (gg-if (gg-eq-p (car alt)) (gg-any))))
+               (rest (cdr alt)))
+           (if (= 0 prec)
+               (gg-translate-alt rest prec expr)
+             (cons expr rest))))
+
+        ((stringp (car alt))
+         (let ((expr (gg-seq expr (gg-re (car alt))))
                (rest (cdr alt)))
            (if (= 0 prec)
                (gg-translate-alt rest prec expr)

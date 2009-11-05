@@ -176,4 +176,22 @@
        (num
           ?0 -> 0 | ?1 -> 1 | ?2 -> 2 | ?3 -> 3 | ?4 -> 4
         | ?5 -> 5 | ?6 -> 6 | ?7 -> 7 | ?8 -> 8 | ?9 -> 9)))))
+
+ ; regular expression literals should work
+ (expect '(t . ("good" "food" "mood"))
+   (with-test-buffer "goodfoodmood"
+     (gg-parse
+      (gg-grammar
+       (start xs := words eof -> xs)
+       (words
+          x := word xs := words -> (cons x xs)
+        | -> nil)
+       (word ".o+.")))))
+
+ ; regular expression literals should not skip forward
+ (expect nil
+   (with-test-buffer "xo"
+     (gg-parse
+      (gg-grammar
+       (start "o")))))
 )
